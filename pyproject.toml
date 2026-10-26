@@ -16,9 +16,12 @@ dev = [
     "pytest-asyncio>=0.24",
     "pytest-timeout>=2.3",
 ]
-telnyx = ["telnyx>=2.0"]
+telnyx = ["fastapi>=0.100", "uvicorn[standard]>=0.27", "websockets>=12.0"]
 deepgram = ["deepgram-sdk>=3.0"]
 cartesia = ["cartesia>=1.0"]
+
+[project.scripts]
+ringaround = "ringaround.cli:main"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

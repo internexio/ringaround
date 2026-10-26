@@ -148,7 +148,7 @@ class IntelStore:
             "contractor_zip": result.contractor.zip_code,
             "place_id": result.contractor.place_id,
             "category": result.contractor.category,
-            "project_zip": result.job_id,  # project zip lives on Job; best-effort from job_id
+            "project_zip": result.contractor.zip_code,  # best-effort; use record_job for accurate project zip
             "price_low": q.price_low,
             "price_high": q.price_high,
             "availability": q.availability,

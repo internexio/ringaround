@@ -8,26 +8,37 @@ import os
 import httpx
 
 _DEEPGRAM_URL = "https://api.deepgram.com/v1/listen"
-_DEFAULT_PARAMS = {
+_BASE_PARAMS = {
     "model": "nova-2",
-    "encoding": "linear16",
-    "sample_rate": "16000",
     "channels": "1",
     "punctuate": "true",
     "utterances": "false",
 }
 
+# Minimum bytes for a 0.1s utterance at given sample rates
+_MIN_BYTES = {8000: 1600, 16000: 3200}
+
 
 class DeepgramSTTProvider:
-    def __init__(self, api_key: str | None = None):
+    def __init__(
+        self,
+        api_key: str | None = None,
+        sample_rate: int = 16000,
+        encoding: str = "linear16",
+    ):
         self._api_key = api_key or os.getenv("DEEPGRAM_API_KEY")
+        self._params = {
+            **_BASE_PARAMS,
+            "encoding": encoding,
+            "sample_rate": str(sample_rate),
+        }
+        self._min_bytes = _MIN_BYTES.get(sample_rate, 3200)
 
     async def transcribe_turn(self, audio_bytes: bytes, hint: str = "") -> str:
         if not audio_bytes or not self._api_key:
             return ""
 
-        # Skip near-silent chunks (< 0.1s at 16kHz/16-bit = 3200 bytes)
-        if len(audio_bytes) < 3200:
+        if len(audio_bytes) < self._min_bytes:
             return ""
 
         try:
@@ -38,7 +49,7 @@ class DeepgramSTTProvider:
             async with httpx.AsyncClient(timeout=15) as client:
                 resp = await client.post(
                     _DEEPGRAM_URL,
-                    params=_DEFAULT_PARAMS,
+                    params=self._params,
                     headers=headers,
                     content=audio_bytes,
                 )

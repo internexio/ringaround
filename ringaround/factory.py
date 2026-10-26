@@ -34,7 +34,10 @@ def build_stt():
     provider = os.getenv("STT_PROVIDER", "mock").lower()
     if provider == "deepgram":
         from ringaround.audio.stt.deepgram import DeepgramSTTProvider
-        return DeepgramSTTProvider()
+        # Telnyx decodes µ-law to 8kHz PCM before sending to STT
+        telephony = os.getenv("TELEPHONY_PROVIDER", "mock").lower()
+        sample_rate = 8000 if telephony == "telnyx" else 16000
+        return DeepgramSTTProvider(sample_rate=sample_rate)
     from ringaround.audio.stt.mock import MockSTTProvider
     return MockSTTProvider()
 

@@ -8,13 +8,14 @@ through an asyncio.Lock so concurrent call completions don't corrupt rows.
 """
 from __future__ import annotations
 import asyncio
+import secrets
 import sqlite3
 import statistics
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from ringaround.models import CallResult, CallState
-from ringaround.intel.models import QuoteObservation, MarketSummary
+from ringaround.intel.models import QuoteObservation, MarketSummary, Subscription
 
 _SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -48,6 +49,14 @@ CREATE INDEX IF NOT EXISTS idx_observed_at
     ON quote_observations(observed_at);
 CREATE INDEX IF NOT EXISTS idx_contractor_phone
     ON quote_observations(contractor_phone);
+
+CREATE TABLE IF NOT EXISTS subscriptions (
+    api_key      TEXT PRIMARY KEY,
+    email        TEXT NOT NULL,
+    tier         TEXT NOT NULL DEFAULT 'free',
+    created_at   TEXT NOT NULL,
+    expires_at   TEXT
+);
 """
 
 _INSERT = """
@@ -155,7 +164,7 @@ class IntelStore:
             "timeline_weeks": q.timeline_weeks,
             "confidence": q.confidence,
             "raw_quote_text": q.raw_quote_text,
-            "observed_at": datetime.utcnow().isoformat(),
+            "observed_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
         }
 
         conn = self._require_conn()
@@ -185,7 +194,7 @@ class IntelStore:
                 "timeline_weeks": q.timeline_weeks,
                 "confidence": q.confidence,
                 "raw_quote_text": q.raw_quote_text,
-                "observed_at": datetime.utcnow().isoformat(),
+                "observed_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
             }
             conn = self._require_conn()
             async with self._write_lock_safe():
@@ -218,7 +227,7 @@ class IntelStore:
         limit: int = 200,
     ) -> list[QuoteObservation]:
         """Raw quote records for a category + zip — used by the contractor portal."""
-        cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+        cutoff = (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)).isoformat()
         sql = """
             SELECT * FROM quote_observations
             WHERE category = ?
@@ -240,7 +249,7 @@ class IntelStore:
         days: int = 365,
     ) -> list[QuoteObservation]:
         """All quotes from a specific contractor — useful for pricing trend analysis."""
-        cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+        cutoff = (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)).isoformat()
         if category:
             sql = """
                 SELECT * FROM quote_observations
@@ -270,7 +279,7 @@ class IntelStore:
         days: int = 90,
     ) -> dict[str, int]:
         """Observation count per category in a zip — helps subscribers see market depth."""
-        cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+        cutoff = (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)).isoformat()
         sql = """
             SELECT category, COUNT(*) as cnt
             FROM quote_observations
@@ -292,6 +301,74 @@ class IntelStore:
             lambda: conn.execute("SELECT COUNT(*) FROM quote_observations").fetchone()
         )
         return row[0]
+
+    # ---------------------------------------------------------- subscriptions
+
+    async def create_subscription(
+        self,
+        email: str,
+        tier: str = "standard",
+        expires_at: datetime | None = None,
+    ) -> str:
+        """Create a subscription and return the generated API key."""
+        api_key = secrets.token_urlsafe(32)
+        row = {
+            "api_key": api_key,
+            "email": email,
+            "tier": tier,
+            "created_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
+            "expires_at": expires_at.isoformat() if expires_at else None,
+        }
+        conn = self._require_conn()
+        async with self._write_lock_safe():
+            await asyncio.to_thread(
+                lambda: (
+                    conn.execute(
+                        "INSERT INTO subscriptions (api_key, email, tier, created_at, expires_at) "
+                        "VALUES (:api_key, :email, :tier, :created_at, :expires_at)",
+                        row,
+                    ),
+                    conn.commit(),
+                )
+            )
+        return api_key
+
+    async def get_subscription(self, api_key: str) -> Subscription | None:
+        """Look up a subscription by API key. Returns None if not found or expired."""
+        conn = self._require_conn()
+        row = await asyncio.to_thread(
+            lambda: conn.execute(
+                "SELECT * FROM subscriptions WHERE api_key = ?", (api_key,)
+            ).fetchone()
+        )
+        if row is None:
+            return None
+        sub = Subscription(
+            api_key=row["api_key"],
+            email=row["email"],
+            tier=row["tier"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+            expires_at=datetime.fromisoformat(row["expires_at"]) if row["expires_at"] else None,
+        )
+        if sub.expires_at and sub.expires_at < datetime.now(timezone.utc).replace(tzinfo=None):
+            return None  # expired
+        return sub
+
+    async def list_subscriptions(self) -> list[Subscription]:
+        conn = self._require_conn()
+        rows = await asyncio.to_thread(
+            lambda: conn.execute("SELECT * FROM subscriptions ORDER BY created_at DESC").fetchall()
+        )
+        return [
+            Subscription(
+                api_key=r["api_key"],
+                email=r["email"],
+                tier=r["tier"],
+                created_at=datetime.fromisoformat(r["created_at"]),
+                expires_at=datetime.fromisoformat(r["expires_at"]) if r["expires_at"] else None,
+            )
+            for r in rows
+        ]
 
 
 # ------------------------------------------------------------------ helpers
@@ -323,5 +400,5 @@ def _build_summary(
         price_high_median=_med(prices_high),
         availability_rate=len(available) / len(observations) if observations else 0.0,
         avg_timeline_weeks=round(statistics.mean(timelines), 1) if timelines else None,
-        generated_at=datetime.utcnow(),
+        generated_at=datetime.now(timezone.utc).replace(tzinfo=None),
     )

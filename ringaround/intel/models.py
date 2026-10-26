@@ -34,6 +34,14 @@ class QuoteObservation(BaseModel):
     observed_at: datetime
 
 
+class Subscription(BaseModel):
+    api_key: str
+    email: str
+    tier: str                      # free | standard | pro
+    created_at: datetime
+    expires_at: datetime | None
+
+
 class MarketSummary(BaseModel):
     """Aggregated market intelligence for a category + zip slice."""
     category: str
